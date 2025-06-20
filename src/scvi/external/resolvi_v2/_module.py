@@ -338,6 +338,7 @@ class RESOLVAEModel_V2(PyroModule):
 
         with pyro.plate("obs_plate", size=n_obs or self.n_obs, subsample_size=x.shape[0], dim=-1):
             # Expected dispersion given distance between cells
+            # TODO: PiT & BNN
             distances = 30.0 * pyro.deterministic(
                 "distances",
                 torch.exp(
@@ -347,7 +348,7 @@ class RESOLVAEModel_V2(PyroModule):
                 event_dim=1,
             )  # clamping here as otherwise gradient not defined
             px_r = 1 / pyro.sample("px_r_inv", Exponential(torch.ones_like(x)).to_event(1))
-
+            # TODO: PiT & BNN
             per_neighbor_diffusion = pyro.sample(
                 "per_neighbor_diffusion",
                 Dirichlet(concentration=distances, validate_args=False),  # rounding errors
@@ -466,10 +467,20 @@ class RESOLVAEModel_V2(PyroModule):
                 )
 
                 if z.ndim == 2:
+                    # TODO: Aggregate before or after
                     zn = Normal(
                         qz_m_n.reshape(x.shape[0], self.n_neighbors, self.n_latent),
                         torch.sqrt(qz_v_n.reshape(x.shape[0], self.n_neighbors, self.n_latent)),
                     ).sample()
+                    z_ag = pyro.deterministic("z_ag", torch.einsum('bc,bck->bk', v, zn))    # Sample by v from neighboring cells.
+                    _, _, px_rate_ag, _ = self.decoder(
+                        self.dispersion,
+                        z_ag,
+                        library,
+                        batch_index,
+                        *categorical_input,
+                    )
+                    px_rate_ag = px_rate_ag.reshape([x.shape[0], self.n_input])
                     _, _, px_rate_n, _ = self.decoder(
                         self.dispersion,
                         zn.reshape([x.shape[0] * self.n_neighbors, self.n_latent]),
@@ -483,6 +494,17 @@ class RESOLVAEModel_V2(PyroModule):
                         qz_m_n.reshape(x.shape[0], self.n_neighbors, self.n_latent),
                         torch.sqrt(qz_v_n.reshape(x.shape[0], self.n_neighbors, self.n_latent)),
                     ).sample([z.shape[0]])
+                    z_ag = pyro.deterministic("z_ag", torch.einsum('abc,abck->abk', v, zn))  # Sample by v from neighboring cells.
+                    _, _, px_rate_ag, _ = self.decoder(
+                        self.dispersion,
+                        z_ag.reshape([z.shape[0], x.shape[0], self.n_latent]),
+                        library,
+                        batch_index,
+                        *categorical_input,
+                    )
+                    px_rate_ag = px_rate_ag.reshape(
+                        [z.shape[0], x.shape[0], self.n_input]
+                    )
                     _, _, px_rate_n, _ = self.decoder(
                         self.dispersion,
                         zn.reshape([z.shape[0], x.shape[0] * self.n_neighbors, self.n_latent]),
@@ -494,14 +516,21 @@ class RESOLVAEModel_V2(PyroModule):
                         [z.shape[0], x.shape[0], self.n_neighbors, self.n_input]
                     )
 
+                px_rate_ag = pyro.deterministic("px_rate_ag", px_rate_ag, event_dim=1)
                 px_rate_n = pyro.deterministic("px_rate_n", px_rate_n, event_dim=2)
 
-            # Collecting all means. Sample by v from neighboring cells.
+            ratio = pyro.param(
+                "mixing_ratio",
+                torch.tensor(0.5, device=x.device),  # initial value
+                constraint=constraints.unit_interval,  # restrict to [0, 1]
+            )
+            px_rate_comb = (1-ratio) * px_rate_ag.unsqueeze(-2) + ratio * v.unsqueeze(-1) * px_rate_n
+            # Collecting all means.
             px_rate_sum = torch.sum(
                 torch.cat(
                     [
                         (true_mixture_proportion.unsqueeze(-1) * px_rate).unsqueeze(-2),
-                        v.unsqueeze(-1) * px_rate_n,
+                        px_rate_comb,
                     ],
                     dim=-2,
                 ),
