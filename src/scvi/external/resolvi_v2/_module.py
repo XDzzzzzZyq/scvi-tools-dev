@@ -346,6 +346,12 @@ class RESOLVAEModel_V2(PyroModule):
         u_prior_means = pyro.param("u_prior_means", self.u_prior_means)
         u_prior_scales = pyro.param("u_prior_scales", self.u_prior_scales)
 
+        ratio = pyro.param(
+            "mixing_ratio",
+            torch.tensor(0.5, device=x.device),  # initial value
+            constraint=constraints.unit_interval,  # restrict to [0, 1]
+        )
+
         with pyro.plate("obs_plate", size=n_obs or self.n_obs, subsample_size=x.shape[0], dim=-1):
             # Expected dispersion given distance between cells
             # TODO: PiT & BNN
@@ -529,12 +535,8 @@ class RESOLVAEModel_V2(PyroModule):
                 px_rate_ag = pyro.deterministic("px_rate_ag", px_rate_ag, event_dim=1)
                 px_rate_n = pyro.deterministic("px_rate_n", px_rate_n, event_dim=2)
 
-            ratio = pyro.param(
-                "mixing_ratio",
-                torch.tensor(0.5, device=x.device),  # initial value
-                constraint=constraints.unit_interval,  # restrict to [0, 1]
-            )
             px_rate_comb = (1-ratio) * px_rate_ag.unsqueeze(-2) + ratio * v.unsqueeze(-1) * px_rate_n
+            # print(px_rate_ag.unsqueeze(-2).shape, (v.unsqueeze(-1) * px_rate_n).shape)
             # Collecting all means.
             px_rate_sum = torch.sum(
                 torch.cat(
