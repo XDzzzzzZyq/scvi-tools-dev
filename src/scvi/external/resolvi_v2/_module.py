@@ -152,7 +152,6 @@ class RESOLVAEModel_V2(PyroModule):
         self.n_input = n_input
         self.n_obs = n_obs
         self.n_neighbors = n_neighbors
-        self.expression_anntorchdata = expression_anntorchdata
         self.semisupervised = semisupervised
         self.eps = torch.tensor(1e-6)
         self.encode_covariates = encode_covariates
@@ -245,7 +244,7 @@ class RESOLVAEModel_V2(PyroModule):
         distances_n = tensor_dict["distance_neighbor"]
         ind_neighbors = tensor_dict["index_neighbor"].long()
 
-        x_n = self.expression_anntorchdata[ind_neighbors.cpu().numpy().flatten(), :]["X"]
+        x_n = self.expression_anntorchdata[ind_neighbors.cpu().numpy().flatten(), :][REGISTRY_KEYS.X_KEY]
         if isinstance(x_n, np.ndarray):
             x_n = torch.from_numpy(x_n)
         x_n = x_n.to(x.device)
@@ -257,14 +256,23 @@ class RESOLVAEModel_V2(PyroModule):
         x_n = x_n.reshape(x.shape[0], -1)
         library = torch.log(torch.sum(x, dim=1, keepdim=True))
 
+        in_tissue = tensor_dict["in_tissue"].to(x.device)
+        in_tissue_n = self.expression_anntorchdata[ind_neighbors.cpu().numpy().flatten(), :]["in_tissue"]
+        if isinstance(in_tissue_n, np.ndarray):
+            in_tissue_n = torch.from_numpy(in_tissue_n)
+        in_tissue_n = in_tissue_n.to(x.device)
+        tissue_color = tensor_dict["tissue_color"] # TODO
+
         return (), {
             "x": x,
+            "in_tissue": in_tissue,
             "ind_x": ind_x,
             "library": library,
             "y": y,
             "batch_index": batch_index,
             "cat_covs": cat_covs,
             "x_n": x_n,
+            "in_tissue_n": in_tissue_n,
             "distances_n": distances_n,
         }
 
@@ -272,12 +280,14 @@ class RESOLVAEModel_V2(PyroModule):
     def model_unconditioned(
         self,
         x: torch.Tensor,
+        in_tissue: torch.Tensor,
         ind_x: torch.Tensor,
         library: torch.Tensor,
         y: torch.Tensor,
         batch_index: torch.Tensor,
         cat_covs: torch.Tensor,
         x_n: torch.Tensor,
+        in_tissue_n: torch.Tensor,
         distances_n: torch.Tensor,
         n_obs: int | None = None,
         kl_weight: float = 1.0,
@@ -576,12 +586,14 @@ class RESOLVAEModel_V2(PyroModule):
     def forward(
         self,
         x: torch.Tensor,
+        in_tissue: torch.Tensor,
         ind_x: torch.Tensor,
         library: torch.Tensor,
         y: torch.Tensor,
         batch_index: torch.Tensor,
         cat_covs: torch.Tensor,
         x_n: torch.Tensor,
+        in_tissue_n: torch.Tensor,
         distances_n: torch.Tensor,
         n_obs: int | None = None,
         kl_weight: float = 1.0,
@@ -589,19 +601,21 @@ class RESOLVAEModel_V2(PyroModule):
         """Forward pass."""
         # Using condition handle for training, this is the reconstruction loss.
         pyro.condition(self.model_unconditioned, data={"obs": x})(
-            x, ind_x, library, y, batch_index, cat_covs, x_n, distances_n, n_obs, kl_weight
+            x, in_tissue, ind_x, library, y, batch_index, cat_covs, x_n, in_tissue_n, distances_n, n_obs, kl_weight
         )
 
     @auto_move_data
     def model_corrected(
         self,
         x: torch.Tensor,
+        in_tissue: torch.Tensor,
         ind_x: torch.Tensor,
         library: torch.Tensor,
         y: torch.Tensor,
         batch_index: torch.Tensor,
         cat_covs: torch.Tensor,
         x_n: torch.Tensor,
+        in_tissue_n: torch.Tensor,
         distances_n: torch.Tensor,
         n_obs: int | None = None,
         kl_weight: float = 1.0,
@@ -613,18 +627,20 @@ class RESOLVAEModel_V2(PyroModule):
                 "diffusion_mixture_proportion": torch.zeros(x.shape[0], device=x.device),
                 "true_mixture_proportion": torch.ones(x.shape[0], device=x.device),
             },
-        )(x, ind_x, library, y, batch_index, cat_covs, x_n, distances_n, n_obs, kl_weight)
+        )(x, in_tissue, ind_x, library, y, batch_index, cat_covs, x_n, in_tissue_n, distances_n, n_obs, kl_weight)
 
     @auto_move_data
     def model_residuals(
         self,
         x: torch.Tensor,
+        in_tissue: torch.Tensor,
         ind_x: torch.Tensor,
         library: torch.Tensor,
         y: torch.Tensor,
         batch_index: torch.Tensor,
         cat_covs: torch.Tensor,
         x_n: torch.Tensor,
+        in_tissue_n: torch.Tensor,
         distances_n: torch.Tensor,
         n_obs: int | None = None,
         kl_weight: float = 1.0,
@@ -634,18 +650,20 @@ class RESOLVAEModel_V2(PyroModule):
             data={
                 "true_mixture_proportion": torch.zeros(x.shape[0], device=x.device),
             },
-        )(x, ind_x, library, y, batch_index, cat_covs, x_n, distances_n, n_obs, kl_weight)
+        )(x, in_tissue, ind_x, library, y, batch_index, cat_covs, x_n, in_tissue_n, distances_n, n_obs, kl_weight)
 
     @auto_move_data
     def model_simplified(
         self,
         x: torch.Tensor,
+        in_tissue: torch.Tensor,
         ind_x: torch.Tensor,
         library: torch.Tensor,
         y: torch.Tensor,
         batch_index: torch.Tensor,
         cat_covs: torch.Tensor,
         x_n: torch.Tensor,
+        in_tissue_n: torch.Tensor,
         distances_n: torch.Tensor,
         n_obs: int | None = None,
         kl_weight: float = 1.0,
@@ -679,10 +697,10 @@ class RESOLVAEModel_V2(PyroModule):
                         "diffusion_mixture_proportion": torch.zeros(x.shape[0], device=x.device),
                         "true_mixture_proportion": torch.ones(x.shape[0], device=x.device),
                     },
-                )(x, ind_x, library, y, batch_index, cat_covs, x_n, distances_n, n_obs, kl_weight)
+                )(x, in_tissue, ind_x, library, y, batch_index, cat_covs, x_n, in_tissue_n, distances_n, n_obs, kl_weight)
             else:
                 simplified_model(
-                    x, ind_x, library, y, batch_index, cat_covs, x_n, distances_n, n_obs, kl_weight
+                    x, in_tissue, ind_x, library, y, batch_index, cat_covs, x_n, in_tissue_n, distances_n, n_obs, kl_weight
                 )
 
 
@@ -813,12 +831,14 @@ class RESOLVAEGuide_V2(PyroModule):
     def forward(  # not used arguments to have same set of arguments in model and guide
         self,
         x,
+        in_tissue,
         ind_x,
         library,
         y,
         batch_index,
         cat_covs,
         x_n,
+        in_tissue_n,
         distances_n,
         n_obs=None,
         kl_weight=1.0,
@@ -939,12 +959,14 @@ class RESOLVAEGuide_V2(PyroModule):
     def guide_simplified(
         self,
         x: torch.Tensor,
+        in_tissue: torch.Tensor,
         ind_x: torch.Tensor,
         library: torch.Tensor,
         y: torch.Tensor,
         batch_index: torch.Tensor,
         cat_covs: torch.Tensor,
         x_n: torch.Tensor,
+        in_tissue_n: torch.Tensor,
         distances_n: torch.Tensor,
         n_obs: int | None = None,
         kl_weight: float = 1.0,
@@ -967,7 +989,7 @@ class RESOLVAEGuide_V2(PyroModule):
 
         with pyro.poutine.scale(scale=x.shape[0] / self.n_obs):
             simplified_guide(
-                x, ind_x, library, y, batch_index, cat_covs, x_n, distances_n, n_obs, kl_weight
+                x, in_tissue, ind_x, library, y, batch_index, cat_covs, x_n, in_tissue_n, distances_n, n_obs, kl_weight
             )
 
 

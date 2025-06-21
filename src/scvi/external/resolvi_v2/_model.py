@@ -140,7 +140,7 @@ class RESOLVI_V2(
 
         expression_anntorchdata = AnnTorchDataset(
             self.adata_manager,
-            getitem_tensors=["X"],
+            getitem_tensors=[REGISTRY_KEYS.X_KEY, "in_tissue"],
             load_sparse_tensor=True,
         )
         self.module = self._module_cls(
@@ -333,6 +333,8 @@ class RESOLVI_V2(
             CategoricalObsField(REGISTRY_KEYS.BATCH_KEY, batch_key),
             ObsmField("index_neighbor", "index_neighbor"),
             ObsmField("distance_neighbor", "distance_neighbor"),
+            ObsmField("tissue_color", "tissue_color"),
+            CategoricalObsField("in_tissue", "in_tissue"),
             CategoricalObsField(REGISTRY_KEYS.INDICES_KEY, "_indices"),
             label_field,
             CategoricalJointObsField(REGISTRY_KEYS.CAT_COVS_KEY, categorical_covariate_keys),
@@ -387,6 +389,34 @@ class RESOLVI_V2(
         adata.obsm["X_spatial"] = adata.obsm[spatial_rep]
         adata.obsm["index_neighbor"] = index_neighbor
         adata.obsm["distance_neighbor"] = distance_neighbor
+
+        required_keys = {'key', 'thres1', 'thres2'}
+        if required_keys.issubset(kwargs):
+            # TODO: Higher resolution?
+            img = adata.uns["spatial"][kwargs['key']]["images"]["hires"]
+            scl = adata.uns["spatial"][kwargs['key']]["scalefactors"]["tissue_hires_scalef"]
+
+            coords = adata.obsm["X_spatial"]
+            coords_img = np.round(coords * scl).astype(int)
+
+            h, w, _ = img.shape
+            coords_img[:, 0] = np.clip(coords_img[:, 0], 0, w - 1)
+            coords_img[:, 1] = np.clip(coords_img[:, 1], 0, h - 1)
+
+            colors = img[coords_img[:, 1], coords_img[:, 0]]  # (y, x) indexing
+            colors = colors / 255.0  # Normalize to [0, 1]
+            thres1 = kwargs["thres1"]
+            thres2 = kwargs["thres2"]
+        else:
+            colors = np.zeros([adata.n_obs, 3])
+            thres1 = thres2 = 1.0
+            
+        adata.obs["spot_gray"] = (colors[:,0] + colors[:,1] + colors[:,2]) / 3
+        adata.obs["in_tissue"] = np.where(
+                adata.obs["spot_gray"] < thres1, 2,
+                np.where(adata.obs["spot_gray"] < thres2, 1, 0)  # 2: in, 1: ambiguous, 0: out
+        )
+        adata.obsm["tissue_color"] = colors
 
     def compute_dataset_dependent_priors(self, n_small_genes=None):
         x = self.adata_manager.get_from_registry(REGISTRY_KEYS.X_KEY)
