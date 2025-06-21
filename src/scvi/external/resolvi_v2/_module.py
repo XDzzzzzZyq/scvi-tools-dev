@@ -453,7 +453,8 @@ class RESOLVAEModel_V2(PyroModule):
                 probs_prediction_ = self.classifier(z)
 
             # Stored for use in residual model.
-            px_rate = pyro.deterministic("px_rate", px_rate, event_dim=1)
+            mask = pyro.deterministic("mask", in_tissue * 0.5, event_dim=1)
+            px_rate = pyro.deterministic("px_rate", px_rate * mask, event_dim=1)
             pyro.deterministic("px_scale", px_scale, event_dim=1)
 
             # Set model to eval mode. Best estimate of neighbor cells.
@@ -533,10 +534,10 @@ class RESOLVAEModel_V2(PyroModule):
                     )
 
                 px_rate_ag = pyro.deterministic("px_rate_ag", px_rate_ag, event_dim=1)
-                px_rate_n = pyro.deterministic("px_rate_n", px_rate_n, event_dim=2)
+                mask_n = pyro.deterministic("mask_n", in_tissue_n.reshape([x.shape[0], self.n_neighbors, 1]) * 0.5, event_dim=2) 
+                px_rate_n = pyro.deterministic("px_rate_n", px_rate_n * mask_n, event_dim=2)
 
             px_rate_comb = (1-ratio) * px_rate_ag.unsqueeze(-2) + ratio * v.unsqueeze(-1) * px_rate_n
-            # print(px_rate_ag.unsqueeze(-2).shape, (v.unsqueeze(-1) * px_rate_n).shape)
             # Collecting all means.
             px_rate_sum = torch.sum(
                 torch.cat(

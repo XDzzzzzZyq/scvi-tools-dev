@@ -334,7 +334,7 @@ class RESOLVI_V2(
             ObsmField("index_neighbor", "index_neighbor"),
             ObsmField("distance_neighbor", "distance_neighbor"),
             ObsmField("tissue_color", "tissue_color"),
-            CategoricalObsField("in_tissue", "in_tissue"),
+            ObsmField("in_tissue", "in_tissue"),
             CategoricalObsField(REGISTRY_KEYS.INDICES_KEY, "_indices"),
             label_field,
             CategoricalJointObsField(REGISTRY_KEYS.CAT_COVS_KEY, categorical_covariate_keys),
@@ -412,10 +412,10 @@ class RESOLVI_V2(
             thres1 = thres2 = 1.0
             
         adata.obs["spot_gray"] = (colors[:,0] + colors[:,1] + colors[:,2]) / 3
-        adata.obs["in_tissue"] = np.where(
+        adata.obsm["in_tissue"] = np.where(
                 adata.obs["spot_gray"] < thres1, 2,
                 np.where(adata.obs["spot_gray"] < thres2, 1, 0)  # 2: in, 1: ambiguous, 0: out
-        )
+        )[:,None].astype(float)
         adata.obsm["tissue_color"] = colors
 
     def compute_dataset_dependent_priors(self, n_small_genes=None):
