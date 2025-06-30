@@ -348,7 +348,7 @@ class RESOLVAEModel_V2(PyroModule):
 
         ratio = pyro.param(
             "mixing_ratio",
-            torch.tensor(0.5, device=x.device),  # initial value
+            torch.tensor(1.0, device=x.device),  # initial value
             constraint=constraints.unit_interval,  # restrict to [0, 1]
         )
 
@@ -457,6 +457,8 @@ class RESOLVAEModel_V2(PyroModule):
             px_rate = pyro.deterministic("px_rate", px_rate * mask, event_dim=1)
             pyro.deterministic("px_scale", px_scale, event_dim=1)
 
+            diff = pyro.deterministic("diff", (1-mask) * px_rate, event_dim=1)
+
             # Set model to eval mode. Best estimate of neighbor cells.
             # Autoencoder for all neighboring cells. Autoencoder is learned above.
 
@@ -485,11 +487,12 @@ class RESOLVAEModel_V2(PyroModule):
 
                 if z.ndim == 2:
                     # TODO: Aggregate before or after
+                    mix = 'bc,bck->bk'
                     zn = Normal(
                         qz_m_n.reshape(x.shape[0], self.n_neighbors, self.n_latent),
                         torch.sqrt(qz_v_n.reshape(x.shape[0], self.n_neighbors, self.n_latent)),
                     ).sample()
-                    z_ag = pyro.deterministic("z_ag", torch.einsum('bc,bck->bk', v, zn))    # Sample by v from neighboring cells.
+                    z_ag = pyro.deterministic("z_ag", torch.einsum(mix, v, zn))    # Sample by v from neighboring cells.
                     _, _, px_rate_ag, _ = self.decoder(
                         self.dispersion,
                         z_ag,
@@ -507,11 +510,12 @@ class RESOLVAEModel_V2(PyroModule):
                     )
                     px_rate_n = px_rate_n.reshape([x.shape[0], self.n_neighbors, self.n_input])
                 else:
+                    mix = 'abc,abck->abk'
                     zn = Normal(
                         qz_m_n.reshape(x.shape[0], self.n_neighbors, self.n_latent),
                         torch.sqrt(qz_v_n.reshape(x.shape[0], self.n_neighbors, self.n_latent)),
                     ).sample([z.shape[0]])
-                    z_ag = pyro.deterministic("z_ag", torch.einsum('abc,abck->abk', v, zn))  # Sample by v from neighboring cells.
+                    z_ag = pyro.deterministic("z_ag", torch.einsum(mix, v, zn))  # Sample by v from neighboring cells.
                     _, _, px_rate_ag, _ = self.decoder(
                         self.dispersion,
                         z_ag.reshape([z.shape[0], x.shape[0], self.n_latent]),
@@ -536,19 +540,11 @@ class RESOLVAEModel_V2(PyroModule):
                 px_rate_ag = pyro.deterministic("px_rate_ag", px_rate_ag, event_dim=1)
                 mask_n = pyro.deterministic("mask_n", in_tissue_n.reshape([x.shape[0], self.n_neighbors, 1]) * 0.5, event_dim=2) 
                 px_rate_n = pyro.deterministic("px_rate_n", px_rate_n * mask_n, event_dim=2)
+                diff_n = pyro.deterministic("diff_n", (1-mask_n) * px_rate_n, event_dim=2)
 
-            px_rate_comb = (1-ratio) * px_rate_ag.unsqueeze(-2) + ratio * v.unsqueeze(-1) * px_rate_n
+            px_rate_comb = (1-ratio) * px_rate_ag + ratio * torch.einsum(mix, v, px_rate_n) # Aggregate neighbour predictions
             # Collecting all means.
-            px_rate_sum = torch.sum(
-                torch.cat(
-                    [
-                        (true_mixture_proportion.unsqueeze(-1) * px_rate).unsqueeze(-2),
-                        px_rate_comb,
-                    ],
-                    dim=-2,
-                ),
-                dim=-2,
-            )
+            px_rate_sum = true_mixture_proportion.unsqueeze(-1) * px_rate + px_rate_comb
             if self.gene_likelihood == "poisson":
                 mean_nb = Delta(px_rate_sum, event_dim=1).rsample()
             else:
