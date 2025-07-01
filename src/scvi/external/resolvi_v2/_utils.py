@@ -8,6 +8,7 @@ import pandas as pd
 import torch
 from anndata import AnnData
 from pyro import infer
+from pyro.infer import Trace_ELBO
 
 from scvi import settings
 from scvi.model._utils import _get_batch_code_from_category, parse_device_args
@@ -469,3 +470,31 @@ class ResolVIPredictiveMixin:
             )
         else:
             return neighbor_abundance
+
+class CustomELBO(Trace_ELBO):
+    def loss(self, model, guide, *args, **kwargs):
+        print("loss")
+        loss = super().loss(model, guide, *args, **kwargs)
+        return loss
+
+    def differentiable_loss(self, model, guide, *args, **kwargs):
+        print("differentiable_loss")
+        loss = super().differentiable_loss(model, guide, *args, **kwargs)
+        return loss
+
+    def loss_and_grads(self, model, guide, *args, **kwargs):
+        loss = super().loss_and_grads(model, guide, *args, **kwargs)
+        loss_ti = 0.0
+        factor = 1e8
+        for model_trace, guide_trace in super()._get_traces(model, guide, args, kwargs):
+            for name, site in model_trace.nodes.items():
+                if "diff" in model_trace.nodes:
+                    diff = model_trace.nodes["diff"]["value"]
+                    mask = model_trace.nodes["mask"]["value"]
+                    loss_ti += diff.square().sum() / (1-mask).sum() / self.num_particles * factor
+                if "diff_n" in model_trace.nodes:
+                    diff_n = model_trace.nodes["diff_n"]["value"]
+                    mask_n = model_trace.nodes["mask_n"]["value"]
+                    loss_ti += diff_n.square().sum() / (1-mask_n).sum() / self.num_particles * factor
+        print(f"\rloss: {loss:.3e}, {loss_ti:.3e}, {(1-mask_n).sum()}        ", end='', flush=True)
+        return loss + loss_ti

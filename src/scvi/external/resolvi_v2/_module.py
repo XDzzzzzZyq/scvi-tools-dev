@@ -453,11 +453,13 @@ class RESOLVAEModel_V2(PyroModule):
                 probs_prediction_ = self.classifier(z)
 
             # Stored for use in residual model.
+            factor = 1e20
             mask = pyro.deterministic("mask", in_tissue * 0.5, event_dim=1)
-            px_rate = pyro.deterministic("px_rate", px_rate * mask, event_dim=1)
+            px_rate = pyro.deterministic("px_rate", px_rate, event_dim=1)
             pyro.deterministic("px_scale", px_scale, event_dim=1)
-
             diff = pyro.deterministic("diff", (1-mask) * px_rate, event_dim=1)
+
+            pyro.factor("penalty", -diff.square().sum() / (1-mask).sum() * factor)
 
             # Set model to eval mode. Best estimate of neighbor cells.
             # Autoencoder for all neighboring cells. Autoencoder is learned above.
@@ -539,8 +541,10 @@ class RESOLVAEModel_V2(PyroModule):
 
                 px_rate_ag = pyro.deterministic("px_rate_ag", px_rate_ag, event_dim=1)
                 mask_n = pyro.deterministic("mask_n", in_tissue_n.reshape([x.shape[0], self.n_neighbors, 1]) * 0.5, event_dim=2) 
-                px_rate_n = pyro.deterministic("px_rate_n", px_rate_n * mask_n, event_dim=2)
+                px_rate_n = pyro.deterministic("px_rate_n", px_rate_n, event_dim=2)
                 diff_n = pyro.deterministic("diff_n", (1-mask_n) * px_rate_n, event_dim=2)
+
+                pyro.factor("penalty_n", -diff_n.square().sum() / (1-mask_n).sum() * factor)
 
             px_rate_comb = (1-ratio) * px_rate_ag + ratio * torch.einsum(mix, v, px_rate_n) # Aggregate neighbour predictions
             # Collecting all means.

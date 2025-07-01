@@ -28,7 +28,7 @@ from scvi.model.base._de_core import _de_core
 from scvi.utils import de_dsp, setup_anndata_dsp
 
 from ._module import RESOLVAE_V2
-from ._utils import ResolVIPredictiveMixin
+from ._utils import ResolVIPredictiveMixin, CustomELBO
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -255,7 +255,7 @@ class RESOLVI_V2(
                 if n_epochs_kl_warmup is not None
                 else max_epochs,
                 "n_steps_kl_warmup": n_steps_kl_warmup,
-                "loss_fn": Trace_ELBO(
+                "loss_fn": CustomELBO(
                     num_particles=5, vectorize_particles=True, retain_graph=True
                 ),
             }
