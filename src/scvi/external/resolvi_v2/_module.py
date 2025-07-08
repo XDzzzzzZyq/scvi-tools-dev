@@ -116,6 +116,7 @@ class RESOLVAEModel_V2(PyroModule):
         n_obs: int,
         n_neighbors: int,
         z_encoder: Encoder,
+        tissue_emb: torch.nn.Module,
         expression_anntorchdata: AnnTorchDataset,
         n_batch: int = 0,
         n_hidden: int = 32,
@@ -141,6 +142,7 @@ class RESOLVAEModel_V2(PyroModule):
     ):
         super().__init__(_RESOLVAE_PYRO_MODULE_NAME)
         self.z_encoder = z_encoder
+        self.tissue_emb = tissue_emb
         self.expression_anntorchdata = expression_anntorchdata
         self.register_buffer("gene_dummy", torch.ones([n_batch, n_input]))
 
@@ -148,6 +150,7 @@ class RESOLVAEModel_V2(PyroModule):
         self.n_latent = n_latent
         self.mixture_k = mixture_k
         self.gene_likelihood = gene_likelihood
+        print(self.gene_likelihood)
         self.n_batch = n_batch
         self.n_input = n_input
         self.n_obs = n_obs
@@ -234,6 +237,7 @@ class RESOLVAEModel_V2(PyroModule):
 
     def _get_fn_args_from_batch(self, tensor_dict: dict[str, torch.Tensor]) -> Iterable | dict:
         x = tensor_dict[REGISTRY_KEYS.X_KEY]
+        position = tensor_dict['X_spatial']
         y = tensor_dict[REGISTRY_KEYS.LABELS_KEY].long().ravel()
         batch_index = tensor_dict[REGISTRY_KEYS.BATCH_KEY]
 
@@ -241,7 +245,10 @@ class RESOLVAEModel_V2(PyroModule):
         cat_covs = tensor_dict[cat_key] if cat_key in tensor_dict.keys() else None
 
         ind_x = tensor_dict[REGISTRY_KEYS.INDICES_KEY].long().ravel()
-        distances_n = tensor_dict["distance_neighbor"]
+        position_n = tensor_dict["position_neighbor"]
+        pos = torch.cat([position.unsqueeze(-2), position_n], dim=-2)
+        distances_n = torch.cdist(pos, pos, p=2)[..., 0, 1:]
+        print(tensor_dict["distance_neighbor"] - distances_n)
         ind_neighbors = tensor_dict["index_neighbor"].long()
 
         x_n = self.expression_anntorchdata[ind_neighbors.cpu().numpy().flatten(), :][REGISTRY_KEYS.X_KEY]
@@ -255,6 +262,7 @@ class RESOLVAEModel_V2(PyroModule):
             x_n = x_n.to_dense()
         x_n = x_n.reshape(x.shape[0], -1)
         library = torch.log(torch.sum(x, dim=1, keepdim=True))
+        print(x.shape, library.shape)
 
         in_tissue = tensor_dict["in_tissue"].to(x.device)
         in_tissue_n = self.expression_anntorchdata[ind_neighbors.cpu().numpy().flatten(), :]["in_tissue"]
@@ -459,7 +467,7 @@ class RESOLVAEModel_V2(PyroModule):
             pyro.deterministic("px_scale", px_scale, event_dim=1)
             diff = pyro.deterministic("diff", (1-mask) * px_rate, event_dim=1)
 
-            pyro.factor("penalty", -diff.square().sum() / (1-mask).sum() * factor)
+            pyro.factor("penalty", (-diff.square().sum() / (1-mask).sum() * factor) if (1-mask).sum()>0 else 0.0)
 
             # Set model to eval mode. Best estimate of neighbor cells.
             # Autoencoder for all neighboring cells. Autoencoder is learned above.
@@ -478,11 +486,12 @@ class RESOLVAEModel_V2(PyroModule):
                 else:
                     categorical_encoder = ()
 
+                emb = self.tissue_emb(in_tissue_n.flatten().long()).to(x.device)
                 qz_m_n, qz_v_n, _ = self.z_encoder(
-                    torch.reshape(
+                    torch.cat([torch.reshape(
                         torch.log1p(x_n / torch.mean(x_n, dim=1, keepdim=True)),
                         (x.shape[0] * self.n_neighbors, x.shape[1]),
-                    ),
+                    ), emb], dim=1),
                     batch_index.repeat_interleave(self.n_neighbors).unsqueeze(1),
                     *categorical_encoder,
                 )
@@ -544,11 +553,12 @@ class RESOLVAEModel_V2(PyroModule):
                 px_rate_n = pyro.deterministic("px_rate_n", px_rate_n, event_dim=2)
                 diff_n = pyro.deterministic("diff_n", (1-mask_n) * px_rate_n, event_dim=2)
 
-                pyro.factor("penalty_n", -diff_n.square().sum() / (1-mask_n).sum() * factor)
+                pyro.factor("penalty_n", (-diff_n.square().sum() / (1-mask_n).sum() * factor) if (1-mask_n).sum()>0 else 0.0)
 
             px_rate_comb = (1-ratio) * px_rate_ag + ratio * torch.einsum(mix, v, px_rate_n) # Aggregate neighbour predictions
             # Collecting all means.
-            px_rate_sum = true_mixture_proportion.unsqueeze(-1) * px_rate + px_rate_comb
+            # px_rate_sum = true_mixture_proportion.unsqueeze(-1) * px_rate + px_rate_comb
+            px_rate_sum = px_rate_comb
             if self.gene_likelihood == "poisson":
                 mean_nb = Delta(px_rate_sum, event_dim=1).rsample()
             else:
@@ -766,6 +776,7 @@ class RESOLVAEGuide_V2(PyroModule):
         n_obs: int,
         n_neighbors: int,
         z_encoder: Encoder,
+        tissue_emb: torch.nn.Module,
         n_batch: int = 0,
         n_latent: int = 10,
         n_layers: int = 2,
@@ -784,6 +795,7 @@ class RESOLVAEGuide_V2(PyroModule):
         super().__init__(_RESOLVAE_PYRO_MODULE_NAME)
         self.dispersion = dispersion
         self.z_encoder = z_encoder
+        self.tissue_emb = tissue_emb
         self.n_latent = n_latent
         self.n_batch = n_batch
         self.encode_covariates = encode_covariates
@@ -950,8 +962,9 @@ class RESOLVAEGuide_V2(PyroModule):
                 # use the encoder to get the parameters used to define q(z|x)
                 if self.training and self.downsample_counts_mean is not None:
                     x = Multinomial(total_count=downsample_counts, probs=x).sample()
+                emb = self.tissue_emb(in_tissue.flatten().long()).to(x.device)
                 qz_m, qz_v, _ = self.z_encoder(
-                    torch.log1p(x / torch.mean(x, dim=1, keepdim=True)),
+                    torch.cat([torch.log1p(x / torch.mean(x, dim=1, keepdim=True)), emb], dim=1),
                     batch_index,
                     *categorical_input,
                 )
@@ -1145,7 +1158,7 @@ class RESOLVAE_V2(PyroBaseModuleClass):
         encoder_cat_list = cat_list if self.encode_covariates else None
 
         self.z_encoder = Encoder(
-            n_input,
+            n_input + 32,
             n_latent,
             n_cat_list=encoder_cat_list,
             n_layers=n_layers,
@@ -1157,8 +1170,11 @@ class RESOLVAE_V2(PyroBaseModuleClass):
             var_activation=var_activation,
         )
 
+        self.tissue_emb = torch.nn.Embedding(3, 32)
+
         self._guide = RESOLVAEGuide_V2(
             z_encoder=self.z_encoder,
+            tissue_emb=self.tissue_emb,
             n_input=n_input,
             n_obs=n_obs,
             n_neighbors=n_neighbors,
@@ -1183,6 +1199,7 @@ class RESOLVAE_V2(PyroBaseModuleClass):
             n_obs=n_obs,
             n_neighbors=n_neighbors,
             z_encoder=self.z_encoder,
+            tissue_emb=self.tissue_emb,
             expression_anntorchdata=expression_anntorchdata,
             n_batch=n_batch,
             n_hidden=n_hidden,

@@ -332,6 +332,8 @@ class RESOLVI_V2(
             LayerField(REGISTRY_KEYS.X_KEY, layer, is_count_data=True),
             CategoricalObsField(REGISTRY_KEYS.BATCH_KEY, batch_key),
             ObsmField("index_neighbor", "index_neighbor"),
+            ObsmField("X_spatial", "X_spatial"),
+            ObsmField("position_neighbor", "position_neighbor"),
             ObsmField("distance_neighbor", "distance_neighbor"),
             ObsmField("tissue_color", "tissue_color"),
             ObsmField("in_tissue", "in_tissue"),
@@ -389,6 +391,7 @@ class RESOLVI_V2(
         adata.obsm["X_spatial"] = adata.obsm[spatial_rep]
         adata.obsm["index_neighbor"] = index_neighbor
         adata.obsm["distance_neighbor"] = distance_neighbor
+        adata.obsm["position_neighbor"] = adata.obsm[spatial_rep][index_neighbor_batch]
 
         required_keys = {'key', 'thres1', 'thres2'}
         if required_keys.issubset(kwargs):
